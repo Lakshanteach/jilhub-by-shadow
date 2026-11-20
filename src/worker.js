@@ -49,6 +49,15 @@ function isAllowedTarget(rawUrl) {
   }
 }
 
+function isJunkPageUrl(rawUrl) {
+  try {
+    const u = new URL(rawUrl);
+    return /\/(?:tags?|categories?|category|models?|channels?|authors?|search)\//i.test(u.pathname);
+  } catch (_) {
+    return true;
+  }
+}
+
 function resolveUrl(raw, base) {
   if (!raw || raw.startsWith("data:") || raw.startsWith("javascript:") || raw.startsWith("#")) {
     return null;
@@ -60,7 +69,7 @@ function resolveUrl(raw, base) {
   }
 }
 
-async function fetchHtml(targetUrl, timeoutMs = 10000) {
+async function fetchHtml(targetUrl, timeoutMs = 12000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -85,7 +94,7 @@ function parseSearchResults(html, baseUrl) {
     if (!linkMatch) continue;
 
     const url = resolveUrl(linkMatch[1], baseUrl);
-    if (!url || !isAllowedTarget(url) || seen.has(url)) continue;
+    if (!url || !isAllowedTarget(url) || isJunkPageUrl(url) || seen.has(url)) continue;
 
     const titleAttr = block.match(/title=["']([^"']+)["']/i);
     const headingMatch = block.match(/<h[1-4]\b[^>]*>([\s\S]*?)<\/h[1-4]>/i);
@@ -106,7 +115,8 @@ function parseSearchResults(html, baseUrl) {
   if (results.length === 0) {
     for (const m of html.matchAll(/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)) {
       const url = resolveUrl(m[1], baseUrl);
-      if (!url || !isAllowedTarget(url) || seen.has(url)) continue;
+      if (!url || !isAllowedTarget(url) || isJunkPageUrl(url) || seen.has(url)) continue;
+
       const u = new URL(url);
       if (u.pathname === "/" || u.pathname.startsWith("/wp-") || u.searchParams.has("s")) continue;
 
@@ -155,8 +165,11 @@ function parseItemInfoAndDownloads(html, pageUrl) {
     if (u) streams.add(u);
   }
 
-  for (const m of html.matchAll(/https?:\/\/[^\s"'<>\\)]+\.(?:mp4|m3u8|mpd|webm|mkv)(?:\?[^\s"'<>\\)]*)?/gi)) {
-    streams.add(decodeHtml(m[0]));
+  // Extract media stream links from HTML and inline JS/JSON configs
+  const mediaRegex = /https?:\/\/[^\s"'<>\\)]+\.(?:mp4|m3u8|mpd|webm)(?:\?[^\s"'<>\\)]*)?/gi;
+  for (const m of html.matchAll(mediaRegex)) {
+    const cleanMedia = decodeHtml(m[0]).replace(/\\\//g, "/");
+    streams.add(cleanMedia);
   }
 
   for (const m of html.matchAll(/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)) {
@@ -164,10 +177,17 @@ function parseItemInfoAndDownloads(html, pageUrl) {
     const label = stripTags(m[2]) || "Download";
     if (!u || seenDl.has(u)) continue;
 
-    if (
-      /\.(?:mp4|mkv|webm|avi|mov|zip|rar|7z)(?:\?|$)/i.test(u) ||
-      /download|dl|watch|play|stream|720p|1080p|480p|360p|hd|sd/i.test(label)
-    ) {
+    // Skip tag, category, model, author, and internal video page links
+    if (isJunkPageUrl(u) || /\/videos\/\d+\//i.test(u) || u === pageUrl || u === BASE_URL) {
+      continue;
+    }
+
+    const isDirectMedia = /\.(?:mp4|mkv|webm|avi|mov|zip|rar|7z)(?:\?|$)/i.test(u);
+    const isFileDownloadUrl =
+      /(?:get_file|download\.php|\/dl\/|cdn|storage|file)/i.test(u) &&
+      !/jilhub\.org/i.test(new URL(u).hostname);
+
+    if (isDirectMedia || isFileDownloadUrl) {
       seenDl.add(u);
       downloads.push({ label, url: u });
     }
